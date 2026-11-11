@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">修复安全中心画面增强服务在游戏冷启动时过早释放、导致超分和插帧开关不显示的问题。</string>
+</resources>

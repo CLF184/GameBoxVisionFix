@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.codex.gameboxvisionfix"
+    android:versionCode="2"
+    android:versionName="1.0.1">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:hasCode="true"
+        android:label="游戏工具箱画面增强修复"
+        android:description="@string/module_description" />
+</manifest>

@@ -1,0 +1,12 @@
+DexKit 2.3.0
+Copyright (C) 2022-2023 LuckyPray
+https://github.com/LuckyPray/DexKit
+Licensed under LGPL-3.0 for the native core and Apache-2.0 elsewhere.
+
+Kotlin standard library 1.5.0
+https://github.com/JetBrains/kotlin
+Licensed under Apache-2.0.
+
+FlatBuffers Java 23.5.26
+https://github.com/google/flatbuffers
+Licensed under Apache-2.0.
