@@ -17,17 +17,22 @@ It watches the normal failure path:
 1. initialization completes;
 2. the toolbox immediately invokes its service-cleanup method.
 
-Only that path starts a bounded recovery window. The module rebinds the Joyose service and re-runs
-the original initialization up to three times. A successful initialization never enters recovery.
+Only cleanup called inside initialization starts a bounded recovery window. Cleanup is deferred,
+retaining the current package, game mode, switch state and service. The original initialization is
+retried up to three times. Success stops recovery immediately; exhaustion executes original cleanup.
+Normal cleanup (including leaving the game) cancels pending retries and proceeds immediately.
+
+Version 1.0.1 retried after cleanup had already cleared the current package and switch state, so
+rebinding alone could not restore initialization. Its recent-capability-check heuristic also treated
+normal game exit as failure. Version 1.0.2 removes that heuristic and the service-rebind workaround.
 
 ## DexKit matching
 
-No obfuscated class, method, or field name is present in the module. DexKit resolves the three methods
+No obfuscated class, method, or field name is present in the module. DexKit resolves the two methods
 at runtime by exact unique log strings:
 
 - `Initialization completed, curPkg = `
 - `release service...`
-- `startService fail. service not null, pkg = `
 
 Signatures are additionally constrained to the same declaring class, return type, and parameter count.
 If a future ROM changes these markers or more than one method matches, the module fails open and logs
@@ -39,9 +44,14 @@ the reason without modifying behavior.
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The signed APK is written to `outputs/gamebox-vision-fix-v1.0.1.apk`.
+The signed APK is written to `outputs/gamebox-vision-fix-v1.0.2.apk`.
 
 ## Verification
+
+Run `pwsh -NoProfile -File tests/run.ps1` for the host regression tests. These execute the actual
+module interceptors with a fake framework and deterministic message queue: session retention,
+success cancellation, retry exhaustion, normal game exit, normal cleanup and retry exceptions.
+They do not validate DexKit or binder behavior on the tablet.
 
 The build checks:
 
@@ -49,7 +59,7 @@ The build checks:
 - exact LSPosed scope `com.miui.securitycenter`;
 - DexKit, Kotlin, FlatBuffers and `libdexkit.so` are packaged;
 - the target descriptor is absent from the generated DEX;
-- all three DexKit log markers are present.
+- both DexKit log markers are present.
 
 Runtime validation on the tablet still requires explicit authorization to install, enable and test
 the LSPosed module.

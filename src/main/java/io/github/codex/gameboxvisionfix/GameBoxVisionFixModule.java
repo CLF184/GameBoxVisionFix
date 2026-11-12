@@ -2,7 +2,6 @@ package io.github.codex.gameboxvisionfix;
 
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.util.Log;
 
 import org.luckypray.dexkit.DexKitBridge;
@@ -30,30 +29,20 @@ public final class GameBoxVisionFixModule extends XposedModule {
     private static final String UI_PROCESS = TARGET + ":ui";
 
     private static final String INIT_MARKER = "Initialization completed, curPkg = ";
-    private static final String CAPABILITY_MARKER =
-            "needInitService isDeviceSupport = %s, isDeviceSupportFRC = %s, "
-                    + "isSupportResolution = %s, isSupportDualDPU = %s";
     private static final String CLEANUP_MARKER = "release service...";
-    private static final String REBIND_MARKER = "startService fail. service not null, pkg = ";
 
     private static final int MAX_RECOVERY_ATTEMPTS = 3;
     private static final long FIRST_RETRY_DELAY_MS = 500L;
-    private static final long SERVICE_SETTLE_DELAY_MS = 900L;
     private static final long RETRY_INTERVAL_MS = 900L;
-    private static final long RECENT_CHECK_WINDOW_MS = 5000L;
-
-    static {
-        System.loadLibrary("dexkit");
-    }
 
     private final AtomicBoolean installed = new AtomicBoolean();
-    private final AtomicBoolean recoveryScheduled = new AtomicBoolean();
     private final ThreadLocal<Boolean> insideInitialization = new ThreadLocal<>();
+    private final ThreadLocal<Boolean> cleanupDeferred = new ThreadLocal<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private volatile XposedInterface.Invoker<?, Method> initializeInvoker;
-    private volatile XposedInterface.Invoker<?, Method> rebindInvoker;
-    private volatile long lastCapabilityCheckMs = -RECENT_CHECK_WINDOW_MS - 1;
+    private volatile XposedInterface.Invoker<?, Method> cleanupInvoker;
+    private volatile Object recoveryToken;
     private volatile boolean targetProcess;
 
     @Override
@@ -75,7 +64,7 @@ public final class GameBoxVisionFixModule extends XposedModule {
     }
 
     private void installHooks(ClassLoader loader) {
-        try (DexKitBridge bridge = DexKitBridge.create(loader, true)) {
+        try (DexKitBridge bridge = openBridge(loader)) {
             MethodData initializeData = findUnique(bridge.findMethod(FindMethod.create()
                     .matcher(MethodMatcher.create()
                             .usingEqStrings(INIT_MARKER)
@@ -93,64 +82,62 @@ public final class GameBoxVisionFixModule extends XposedModule {
                             .returnType("void")
                             .paramCount(0))), "service cleanup");
 
-            MethodData capabilityData = findUnique(ownerData.findMethod(FindMethod.create()
-                    .matcher(MethodMatcher.create()
-                            .usingEqStrings(CAPABILITY_MARKER)
-                            .returnType("boolean")
-                            .paramCount(0))), "capability check");
-
-            MethodData rebindData = findUnique(ownerData.findMethod(FindMethod.create()
-                    .matcher(MethodMatcher.create()
-                            .usingEqStrings(REBIND_MARKER)
-                            .returnType("void")
-                            .paramTypes("java.lang.String"))), "service rebind");
-
             Method initialize = initializeData.getMethodInstance(loader);
             Method cleanup = cleanupData.getMethodInstance(loader);
-            Method capability = capabilityData.getMethodInstance(loader);
-            Method rebind = rebindData.getMethodInstance(loader);
-
-            initializeInvoker = getInvoker(initialize);
-            rebindInvoker = getInvoker(rebind);
-
-            hook(cleanup).setId("gamebox-vision:cleanup").intercept(chain -> {
-                boolean failedInitialization = Boolean.TRUE.equals(insideInitialization.get());
-                boolean recentCapabilityCheck =
-                        SystemClock.elapsedRealtime() - lastCapabilityCheckMs
-                                <= RECENT_CHECK_WINDOW_MS;
-                Object owner = chain.getThisObject();
-                Object result = chain.proceed();
-                if (owner != null && (failedInitialization || recentCapabilityCheck)) {
-                    scheduleRecovery(owner, failedInitialization
-                            ? "initialization failure"
-                            : "recent capability check");
-                }
-                return result;
-            });
-
-            hook(capability).setId("gamebox-vision:capability").intercept(chain -> {
-                try {
-                    return chain.proceed();
-                } finally {
-                    lastCapabilityCheckMs = SystemClock.elapsedRealtime();
-                }
-            });
-
-            hook(initialize).setId("gamebox-vision:initialize").intercept(chain -> {
-                insideInitialization.set(Boolean.TRUE);
-                try {
-                    return chain.proceed();
-                } finally {
-                    insideInitialization.remove();
-                }
-            });
+            installRepairHooks(initialize, cleanup);
 
             log(Log.INFO, TAG, "DexKit resolved repair hooks: " + initializeData
-                    + "; " + capabilityData + "; " + cleanupData + "; " + rebindData);
+                    + "; " + cleanupData);
         } catch (Throwable error) {
             installed.set(false);
             log(Log.ERROR, TAG, "DexKit hook setup failed; no behavior changed", error);
         }
+    }
+
+    private static DexKitBridge openBridge(ClassLoader loader) {
+        System.loadLibrary("dexkit");
+        return DexKitBridge.create(loader, true);
+    }
+
+    private void installRepairHooks(Method initialize, Method cleanup) {
+            cleanupInvoker = getInvoker(cleanup).setType(XposedInterface.Invoker.Type.ORIGIN);
+            initializeInvoker = getInvoker(initialize).setType(XposedInterface.Invoker.Type.ORIGIN);
+
+            hook(cleanup).setId("gamebox-vision:cleanup").intercept(chain -> {
+                Object owner = chain.getThisObject();
+                if (owner == null) {
+                    return chain.proceed();
+                }
+                synchronized (owner) {
+                    if (Boolean.TRUE.equals(insideInitialization.get())) {
+                        // Cleanup clears the current package and switch state. Retrying after it
+                        // cannot restore the session; defer it until the bounded retry is exhausted.
+                        cleanupDeferred.set(Boolean.TRUE);
+                        scheduleRecovery(owner);
+                        return null;
+                    }
+                    recoveryToken = null;
+                    return chain.proceed();
+                }
+            });
+
+            hook(initialize).setId("gamebox-vision:initialize").intercept(chain -> {
+                synchronized (chain.getThisObject()) {
+                    insideInitialization.set(Boolean.TRUE);
+                    cleanupDeferred.set(Boolean.FALSE);
+                    try {
+                        Object result = chain.proceed();
+                        if (!Boolean.TRUE.equals(cleanupDeferred.get())) {
+                            recoveryToken = null;
+                        }
+                        return result;
+                    } finally {
+                        insideInitialization.remove();
+                        cleanupDeferred.remove();
+                    }
+                }
+            });
+
     }
 
     private static MethodData findUnique(MethodDataList candidates, String label) {
@@ -161,49 +148,51 @@ public final class GameBoxVisionFixModule extends XposedModule {
         return candidates.get(0);
     }
 
-    private void scheduleRecovery(Object owner, String reason) {
-        if (!recoveryScheduled.compareAndSet(false, true)) {
+    private void scheduleRecovery(Object owner) {
+        if (recoveryToken != null) {
             return;
         }
-        log(Log.WARN, TAG, "Vision-enhance released the service after " + reason
-                + "; scheduling retry");
-        mainHandler.postDelayed(() -> attemptRecovery(owner, 1), FIRST_RETRY_DELAY_MS);
+        Object token = new Object();
+        recoveryToken = token;
+        log(Log.WARN, TAG, "Deferring failed initialization cleanup; retaining game session for retry");
+        mainHandler.postDelayed(() -> attemptRecovery(owner, token, 1), FIRST_RETRY_DELAY_MS);
     }
 
-    private void attemptRecovery(Object owner, int attempt) {
-        if (!recoveryScheduled.get()) {
-            return;
-        }
-        try {
-            rebindInvoker.invoke(owner, "GameBoxVisionFix");
-            log(Log.INFO, TAG, "Re-bound Joyose service for recovery attempt " + attempt);
-        } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Service rebind failed on attempt " + attempt, error);
-            finishRecovery();
-            return;
-        }
-
-        mainHandler.postDelayed(() -> {
-            try {
-                initializeInvoker.invoke(owner);
-                log(Log.INFO, TAG, "Re-ran vision-enhance initialization, attempt " + attempt);
-            } catch (Throwable error) {
-                log(Log.ERROR, TAG, "Initialization retry failed on attempt " + attempt, error);
-                finishRecovery();
+    private void attemptRecovery(Object owner, Object token, int attempt) {
+        synchronized (owner) {
+            if (recoveryToken != token) {
                 return;
             }
-
+            insideInitialization.set(Boolean.TRUE);
+            cleanupDeferred.set(Boolean.FALSE);
+            boolean failed = true;
+            try {
+                initializeInvoker.invoke(owner);
+                failed = Boolean.TRUE.equals(cleanupDeferred.get());
+                log(Log.INFO, TAG, "Vision-enhance retry " + attempt
+                        + (failed ? " still requires cleanup" : " completed without cleanup"));
+            } catch (Throwable error) {
+                log(Log.ERROR, TAG, "Initialization retry failed on attempt " + attempt, error);
+            } finally {
+                insideInitialization.remove();
+                cleanupDeferred.remove();
+            }
+            if (!failed) {
+                recoveryToken = null;
+                return;
+            }
             if (attempt < MAX_RECOVERY_ATTEMPTS) {
                 mainHandler.postDelayed(
-                        () -> attemptRecovery(owner, attempt + 1), RETRY_INTERVAL_MS);
+                        () -> attemptRecovery(owner, token, attempt + 1), RETRY_INTERVAL_MS);
             } else {
-                mainHandler.postDelayed(this::finishRecovery, RETRY_INTERVAL_MS);
+                recoveryToken = null;
+                try {
+                    cleanupInvoker.invoke(owner);
+                    log(Log.WARN, TAG, "Vision-enhance retries exhausted; original cleanup completed");
+                } catch (Throwable error) {
+                    log(Log.ERROR, TAG, "Original cleanup failed after retries", error);
+                }
             }
-        }, SERVICE_SETTLE_DELAY_MS);
-    }
-
-    private void finishRecovery() {
-        recoveryScheduled.set(false);
-        log(Log.INFO, TAG, "Vision-enhance recovery window finished");
+        }
     }
 }

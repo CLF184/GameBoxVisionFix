@@ -8,7 +8,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 TOOLS = ROOT / "tools"
-OUTPUT = ROOT / "outputs" / "gamebox-vision-fix-v1.0.1.apk"
+OUTPUT = ROOT / "outputs" / "gamebox-vision-fix-v1.0.2.apk"
 
 
 def dex_type_names(dex: bytes) -> list[str]:
@@ -59,9 +59,7 @@ def verify() -> None:
         assert b"Lkotlin/jvm/internal/Intrinsics;" in dex
         assert b"Lcom/google/flatbuffers/FlatBufferBuilder;" in dex
         assert b"Initialization completed, curPkg = " in dex
-        assert b"needInitService isDeviceSupport = %s" in dex
         assert b"release service..." in dex
-        assert b"startService fail. service not null, pkg = " in dex
         assert b"Lcom/miui/gamebooster/utils/GameBoxVisionEnhanceUtils;" not in dex
         assert b"GameBoxVisionEnhanceUtils;->L()V" not in dex
 

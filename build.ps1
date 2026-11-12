@@ -87,10 +87,10 @@ Invoke-Checked $java @(
     'tools/SignApk.java',
     'tools/gameboxvisionfix-local.p12',
     'build/unsigned.apk',
-    'outputs/gamebox-vision-fix-v1.0.1.apk'
+    'outputs/gamebox-vision-fix-v1.0.2.apk'
 )
 Invoke-Checked 'python' @('tools/package_apk.py','verify')
 Invoke-Checked 'tools/aapt2.exe' @(
-    'dump','badging','outputs/gamebox-vision-fix-v1.0.1.apk'
+    'dump','badging','outputs/gamebox-vision-fix-v1.0.2.apk'
 )
-Get-FileHash -LiteralPath 'outputs/gamebox-vision-fix-v1.0.1.apk' -Algorithm SHA256
+Get-FileHash -LiteralPath 'outputs/gamebox-vision-fix-v1.0.2.apk' -Algorithm SHA256
