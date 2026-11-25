@@ -44,7 +44,9 @@ the reason without modifying behavior.
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The signed APK is written to `outputs/gamebox-vision-fix-v1.0.2.apk`.
+The signed APK is written to `outputs/gamebox-vision-fix-v1.0.3.apk`.
+Version 1.0.3 stores resources.arsc uncompressed and aligned to four bytes, fixing
+INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED (-124) on strict package installers.
 
 ## Verification
 
@@ -56,6 +58,7 @@ They do not validate DexKit or binder behavior on the tablet.
 The build checks:
 
 - APK v2/v3 signatures;
+- resources.arsc is uncompressed and aligned to four bytes in the signed APK;
 - exact LSPosed scope `com.miui.securitycenter`;
 - DexKit, Kotlin, FlatBuffers and `libdexkit.so` are packaged;
 - the target descriptor is absent from the generated DEX;

@@ -8,7 +8,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 TOOLS = ROOT / "tools"
-OUTPUT = ROOT / "outputs" / "gamebox-vision-fix-v1.0.2.apk"
+OUTPUT = ROOT / "outputs" / "gamebox-vision-fix-v1.0.3.apk"
 
 
 def dex_type_names(dex: bytes) -> list[str]:
@@ -32,7 +32,16 @@ def package() -> None:
     with zipfile.ZipFile(BUILD / "unsigned.apk", "w", zipfile.ZIP_DEFLATED) as target:
         with zipfile.ZipFile(BUILD / "base.apk") as base:
             for entry in base.infolist():
-                target.writestr(entry.filename, base.read(entry))
+                if entry.filename == "resources.arsc":
+                    info = zipfile.ZipInfo(entry.filename)
+                    info.compress_type = zipfile.ZIP_STORED
+                    offset = target.fp.tell() + 30 + len(info.filename.encode("utf-8"))
+                    padding = (-offset) % 4
+                    if padding:
+                        info.extra = struct.pack("<HH", 0xD935, padding) + bytes(padding)
+                    target.writestr(info, base.read(entry))
+                else:
+                    target.writestr(entry.filename, base.read(entry))
         target.write(BUILD / "dex/classes.dex", "classes.dex")
         target.write(
             TOOLS / "dexkit/jni/arm64-v8a/libdexkit.so",
@@ -48,6 +57,14 @@ def package() -> None:
 def verify() -> None:
     with zipfile.ZipFile(OUTPUT) as archive:
         assert archive.testzip() is None
+        table = archive.getinfo("resources.arsc")
+        assert table.compress_type == zipfile.ZIP_STORED, "resources.arsc must be uncompressed"
+        with OUTPUT.open("rb") as apk:
+            apk.seek(table.header_offset + 26)
+            name_size, extra_size = struct.unpack("<HH", apk.read(4))
+        assert (table.header_offset + 30 + name_size + extra_size) % 4 == 0, (
+            "resources.arsc must be aligned on a 4-byte boundary"
+        )
         assert archive.read("META-INF/xposed/scope.list").strip() == b"com.miui.securitycenter"
         assert archive.read("META-INF/xposed/java_init.list").strip() == (
             b"io.github.codex.gameboxvisionfix.GameBoxVisionFixModule"
